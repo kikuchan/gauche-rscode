@@ -10,32 +10,16 @@
 
 (select-module rscode)
 
-;;; Utilities
-
-(define-syntax swap!
-  (syntax-rules ()
-    ((_ a b)
-     (let ((tmp a))
-       (set! a b)
-       (set! b tmp)))))
-
-
 ;;; Polynomial
 
 (define (make-poly deg)
   (make-list (+ deg 1) 0))
 
-(define (poly-deg poly)
-  (- (length poly) 1))
-
-(define (poly-copy poly)
-  (list-copy poly))
-
 (define (poly-ref poly i)
-  (ref poly (- (poly-deg poly) i)))
+  (ref poly (- (poly-order poly) i)))
 
 (define (poly-zero? poly)
-  (null? poly))
+  (null? (poly-shrink poly)))
 
 (define (poly-shrink poly)
   (define (remove-first-zeros list)
@@ -52,17 +36,17 @@
       (cons (car poly)
 	    (poly-expand (cdr poly) (- n 1)))))
 
-(define (poly-add-offset offset poly)
+(define (poly-order poly)
+  (- (length (poly-shrink poly)) 1))
+
+(define (poly-elevate-order poly offset)
   (if (zero? offset)
       poly
-      (poly-add-offset (- offset 1) (cons 0 poly))))
+      (poly-elevate-order (cons 0 poly) (- offset 1))))
 
 (define (poly= poly1 poly2)
   (equal? (poly-shrink poly1)
 	  (poly-shrink poly2)))
-
-(define (poly-real-deg poly)
-  (- (length (poly-shrink poly)) 1))
 
 
 ;;; Misc
@@ -71,8 +55,9 @@
   (apply max (map length lists)))
 
 (define (expand-polys lists)
-  (let ((len (max-length-polys lists)))
-    (map (lambda (lst) (poly-expand lst len)) lists)))
+  (if (null? lists) '(())
+    (let ((len (max-length-polys lists)))
+      (map (lambda (lst) (poly-expand lst len)) lists))))
 
 
 
@@ -114,12 +99,12 @@
   (let* ((size (expt 2 n))
 	 (gf2 (make <galois-field-2>
 		:size size
-		:exp-table (make-list size 0)
-		:log-table (make-list size 0))))
+		:exp-table (make-vector size 0)
+		:log-table (make-vector size 0))))
     (init-galois-field-2 gf2 prim-poly)
     gf2))
 
-(define-macro (with-gf2 . rest)
+(define-macro (with-gf2-table . rest)
   `(let ((exp-table (~ gf2 'exp-table))
 	 (log-table (~ gf2 'log-table))
 	 (maximum (max-exp gf2)))
@@ -128,22 +113,25 @@
 (define (gf2-add gf2 . rest)
   (apply logxor rest))
 
+(define (gf2-sub gf2 . rest)
+  (apply logxor rest))
+
 (define (gf2-mul gf2 a b)
-  (with-gf2
+  (with-gf2-table
    (if (or (zero? a) (zero? b))
        0
        (let ((index (mod (+ (~ log-table a) (~ log-table b)) maximum)))
 	 (~ exp-table index)))))
 
 (define (gf2-pow gf2 a exp)
-  (with-gf2
+  (with-gf2-table
    (if (zero? a)
        0
        (let ((index (mod (* (~ log-table a) exp) maximum)))
 	 (~ exp-table index)))))
 
 (define (gf2-div gf2 a b)
-  (with-gf2
+  (with-gf2-table
    (if (zero? a)
        0
        (if (zero? b)
@@ -151,36 +139,36 @@
 	   (let ((index (mod (- (~ log-table a) (~ log-table b)) maximum)))
 	     (~ exp-table index))))))
 
-(define (gf2-pow-a gf2 exp)
-  (with-gf2
+(define (gf2-alpha gf2 exp)
+  (with-gf2-table
    (~ exp-table (mod exp maximum))))
 
-(define (gf2-log-a gf2 val)
-  (with-gf2
+(define (gf2-log-alpha gf2 val)
+  (with-gf2-table
    (~ log-table val)))
 
 (define (gf2-mul-poly gf2 a b)
-  (apply map (lambda rest (apply gf2-add gf2 rest))
-	 (expand-polys
-	  (map (lambda (j offset)
-		 (poly-add-offset offset (map (lambda (i) (gf2-mul gf2 i j)) a)))
-	       b
-	       (iota (+ (poly-deg b) 1))))))
+  (apply map (pa$ gf2-add gf2)
+         (expand-polys
+           (map (lambda (j offset)
+                  (poly-elevate-order (map (lambda (i) (gf2-mul gf2 i j)) a) offset))
+                b
+                (iota (length b))))))
 
 (define (gf2-divmod-poly gf2 a b)
-  (let ((real-b-deg (poly-real-deg b)))
-    (when (< real-b-deg 0)
-	  (error "Devide by zero poly"))
-    (let ((denominator (~ b real-b-deg))
-	  (q (make-poly (- (poly-deg a) real-b-deg)))
-	  (r (poly-copy a)))
-      (do ((i (poly-deg q) (- i 1)))
-	  ((< i 0))
-	(set! (~ q i) (gf2-div gf2 (~ r (+ i real-b-deg)) denominator))
-	(do ((j 0 (+ j 1)))
-	    ((> j real-b-deg))
-	  (set! (~ r (+ i j)) (gf2-add gf2 (~ r (+ i j)) (gf2-mul gf2 (~ b j) (~ q i))))))
-      (values q r))))
+  (define (highest-order-coefficient poly)
+    (fold (^(a b) (if (> a 0) a b)) 0 poly))
+  (let ((max-deg-denom (highest-order-coefficient b)))
+    (let loop ((q '())
+               (r a)
+               (offset (- (poly-order a) (poly-order b))))
+      (if (< offset 0)
+        (values (poly-shrink q) (poly-shrink r))
+        (let* ((tmp-q (poly-elevate-order (list (gf2-div gf2 (highest-order-coefficient r) max-deg-denom)) offset))
+               (nq (gf2-add-poly gf2 q tmp-q))
+               (nr (gf2-sub-poly gf2 r (gf2-mul-poly gf2 tmp-q b))))
+          (loop nq nr (- offset 1)))))))
+
 
 (define (gf2-div-poly gf2 a b)
   (receive (q r) (gf2-divmod-poly gf2 a b)
@@ -193,42 +181,38 @@
 (define (gf2-add-poly gf2 . rest)
   (apply map (lambda args (apply gf2-add gf2 args)) (expand-polys rest)))
 
+(define (gf2-sub-poly gf2 . rest)
+  (apply map (lambda args (apply gf2-sub gf2 args)) (expand-polys rest)))
+
 (define (gf2-dif-poly gf2 a)
-  (let ((ans (make-poly (poly-deg a))))
-    (do ((i 1 (+ i 2)))
-	((> i (poly-deg a)))
-      (set! (~ ans (- i 1)) (~ a i)))
-    ans))
+;  (poly-expand (map (^(x i) (if (even? i) x 0)) (cdr a) (iota (length a))) (length a)))
+  (map (^(x i) (if (even? i) x 0)) (cdr a) (iota (length a))))
 
 (define (gf2-calc-poly gf2 a b)
   (apply gf2-add gf2
-	 (map (lambda (c i) (gf2-mul gf2 c (gf2-pow gf2 b i))) a (iota (+ (poly-deg a) 1)))))
+	 (map (lambda (c i) (gf2-mul gf2 c (gf2-pow gf2 b i))) a (iota (+ (poly-order a) 1)))))
 
 (define (get-generator-polynomial-for-rs gf2 error-words)
   (fold (lambda (i s)
-	  (gf2-mul-poly gf2 s (list (gf2-pow-a gf2 i)
-				    (gf2-pow-a gf2 0))))
+	  (gf2-mul-poly gf2 s (list (gf2-alpha gf2 i)
+				    (gf2-alpha gf2 0))))
 	(list 1)
 	(iota error-words)))
 
 (define (gf2-solve-key-equation gf2 a b)
-  (let ((m (poly-copy a))
-	(n (poly-copy b))
-	(x (list 0))
-	(y (list 1)))
-    (when (< (poly-real-deg m) (poly-real-deg n))
-	  (swap! n m))
-    (while (and (not (poly-zero? n))
-		(>= (poly-real-deg n) (poly-real-deg y)))
-	   (receive (q r) (gf2-divmod-poly gf2 m n)
-		    (let ((z (gf2-add-poly gf2 (gf2-mul-poly gf2 q y) x)))
-		      (set! x y)
-		      (set! y z)
-		      (set! m n)
-		      (set! n r))))
-    (let ((h (list (car y))))
-      (values (gf2-div-poly gf2 y h)
-	      (gf2-div-poly gf2 n h)))))
+  (let loop ((m (if (< (poly-order a) (poly-order b)) b a))
+             (n (if (< (poly-order a) (poly-order b)) a b))
+             (x (list 0))
+             (y (list 1)))
+    (if (and (not (poly-zero? n))
+             (>= (poly-order n) (poly-order y)))
+      (receive (q r) (gf2-divmod-poly gf2 m n)
+        (let ((z (gf2-add-poly gf2 (gf2-mul-poly gf2 q y) x)))
+          (loop n r y z)))
+      (let ((h (list (car y))))
+        (values (gf2-div-poly gf2 y h)
+                (gf2-div-poly gf2 n h))))))
+
 
 (define-class <rscode> ()
   ((gf2         :init-keyword :gf2)
@@ -252,7 +236,7 @@
 (define (rs-encode rscode data-words)
   ;; TODO: check data-words size
   (let* ((gf2 (~ rscode 'gf2))
-         (I (add-offset (~ rscode 'num-error-words) (map (cut gf2-pow-a gf2 <>) (reverse data-words))))
+         (I (poly-elevate-order (map (cut gf2-alpha gf2 <>) (reverse data-words)) (~ rscode 'num-error-words)))
          (g (~ rscode 'g)))
     (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I)))
 
@@ -260,27 +244,34 @@
 (define (rs-decode rscode encoded-words)
   ;;
   (let* ((gf2 (~ rscode 'gf2))
-         (r (poly-copy encoded-words))
+         (r encoded-words)
          (num-total-words (~ rscode 'num-total-words))
          (num-error-words (~ rscode 'num-error-words))
-         (s (map (lambda (i) (gf2-calc-poly gf2 r (gf2-pow-a gf2 i)))
+         (s (map (lambda (i) (gf2-calc-poly gf2 r (gf2-alpha gf2 i)))
                  (iota num-error-words)))
-         (z (add-offset num-error-words '(1))))
-;    (print "syndrome:" s)
-    (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
-;      (print "sigma:" sigma)
-;      (print "omega:" omega)
-      (let* ((x (list 0 1))
-             (denom (gf2-mul-poly gf2 x (gf2-dif-poly gf2 sigma))))
-;        (print "denom:" denom)
-        (dotimes (i (- num-total-words 1))
-          (when (zero? (gf2-calc-poly gf2 sigma (gf2-pow-a gf2 (- (max-exp gf2) i))))
-            (set! (~ r i) (gf2-add gf2 (~ r i)
-                                   (gf2-div gf2
-                                            (gf2-calc-poly gf2 omega (gf2-pow-a gf2 (- (max-exp gf2) i)))
-                                            (gf2-calc-poly gf2 denom (gf2-pow-a gf2 (- (max-exp gf2) i))))))))))
-;    (drop r num-error-words)))
-    (map (cut gf2-log-a gf2 <>) (reverse (drop r num-error-words)))))
+         (z (poly-elevate-order '(1) num-error-words)))
+    (map (pa$ gf2-log-alpha gf2)
+         (reverse
+           (drop
+             (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
+               (let* ((x (list 0 1))
+                      (denom (gf2-mul-poly gf2 x (gf2-dif-poly gf2 sigma))))
+                 (map (pa$ gf2-add gf2)
+                      (map (^i
+                             (let ((v (gf2-alpha gf2 (- (max-exp gf2) i))))
+                               (if (zero? (gf2-calc-poly gf2 sigma v))
+                                 (gf2-div gf2
+                                          (gf2-calc-poly gf2 omega v)
+                                          (gf2-calc-poly gf2 denom v))
+                                 0)))
+                           (iota num-total-words))
+                      r)))
+             num-error-words)))))
+
+
+
+
+
 
 (define (rs-encode-string rscode str)
   (rs-encode rscode (u8vector->list (string->u8vector str))))
