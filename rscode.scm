@@ -16,7 +16,7 @@
   (make-list (+ deg 1) 0))
 
 (define (poly-ref poly i)
-  (ref poly (- (poly-order poly) i)))
+  (ref poly (- (poly-degree poly) i)))
 
 (define (poly-zero? poly)
   (null? (poly-shrink poly)))
@@ -36,7 +36,7 @@
       (cons (car poly)
 	    (poly-expand (cdr poly) (- n 1)))))
 
-(define (poly-order poly)
+(define (poly-degree poly)
   (- (length (poly-shrink poly)) 1))
 
 (define (poly-elevate-order poly offset)
@@ -156,15 +156,15 @@
                 (iota (length b))))))
 
 (define (gf2-divmod-poly gf2 a b)
-  (define (highest-order-coefficient poly)
+  (define (poly-leading-coefficient poly)
     (fold (^(a b) (if (> a 0) a b)) 0 poly))
-  (let ((max-deg-denom (highest-order-coefficient b)))
+  (let ((max-deg-denom (poly-leading-coefficient b)))
     (let loop ((q '())
                (r a)
-               (offset (- (poly-order a) (poly-order b))))
+               (offset (- (poly-degree a) (poly-degree b))))
       (if (< offset 0)
         (values (poly-shrink q) (poly-shrink r))
-        (let* ((tmp-q (poly-elevate-order (list (gf2-div gf2 (highest-order-coefficient r) max-deg-denom)) offset))
+        (let* ((tmp-q (poly-elevate-order (list (gf2-div gf2 (poly-leading-coefficient r) max-deg-denom)) offset))
                (nq (gf2-add-poly gf2 q tmp-q))
                (nr (gf2-sub-poly gf2 r (gf2-mul-poly gf2 tmp-q b))))
           (loop nq nr (- offset 1)))))))
@@ -190,7 +190,7 @@
 
 (define (gf2-calc-poly gf2 a b)
   (apply gf2-add gf2
-	 (map (lambda (c i) (gf2-mul gf2 c (gf2-pow gf2 b i))) a (iota (+ (poly-order a) 1)))))
+	 (map (lambda (c i) (gf2-mul gf2 c (gf2-pow gf2 b i))) a (iota (+ (poly-degree a) 1)))))
 
 (define (get-generator-polynomial-for-rs gf2 error-words)
   (fold (lambda (i s)
@@ -200,12 +200,12 @@
 	(iota error-words)))
 
 (define (gf2-solve-key-equation gf2 a b)
-  (let loop ((m (if (< (poly-order a) (poly-order b)) b a))
-             (n (if (< (poly-order a) (poly-order b)) a b))
+  (let loop ((m (if (< (poly-degree a) (poly-degree b)) b a))
+             (n (if (< (poly-degree a) (poly-degree b)) a b))
              (x (list 0))
              (y (list 1)))
     (if (and (not (poly-zero? n))
-             (>= (poly-order n) (poly-order y)))
+             (>= (poly-degree n) (poly-degree y)))
       (receive (q r) (gf2-divmod-poly gf2 m n)
         (let ((z (gf2-add-poly gf2 (gf2-mul-poly gf2 q y) x)))
           (loop n r y z)))
