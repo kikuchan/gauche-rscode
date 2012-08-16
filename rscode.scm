@@ -113,9 +113,6 @@
 (define (gf2-add gf2 . rest)
   (apply logxor rest))
 
-(define (gf2-sub gf2 . rest)
-  (apply logxor rest))
-
 (define (gf2-mul gf2 a b)
   (with-gf2-table
    (if (or (zero? a) (zero? b))
@@ -166,7 +163,7 @@
         (values (poly-shrink q) (poly-shrink r))
         (let* ((tmp-q (poly-elevate-order (list (gf2-div gf2 (poly-leading-coefficient r) max-deg-denom)) offset))
                (nq (gf2-add-poly gf2 q tmp-q))
-               (nr (gf2-sub-poly gf2 r (gf2-mul-poly gf2 tmp-q b))))
+               (nr (gf2-add-poly gf2 r (gf2-mul-poly gf2 tmp-q b))))
           (loop nq nr (- offset 1)))))))
 
 
@@ -180,9 +177,6 @@
 
 (define (gf2-add-poly gf2 . rest)
   (apply map (lambda args (apply gf2-add gf2 args)) (expand-polys rest)))
-
-(define (gf2-sub-poly gf2 . rest)
-  (apply map (lambda args (apply gf2-sub gf2 args)) (expand-polys rest)))
 
 (define (gf2-dif-poly gf2 a)
 ;  (poly-expand (map (^(x i) (if (even? i) x 0)) (cdr a) (iota (length a))) (length a)))
