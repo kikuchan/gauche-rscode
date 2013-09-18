@@ -21,55 +21,49 @@
 
 ;;; Polynomial
 
-(define (make-poly deg)
-  (make-list (+ deg 1) 0))
-
 (define (poly-ref poly i)
+  ; It refers i-th degree
   (ref poly (- (poly-degree poly) i)))
 
 (define (poly-zero? poly)
-  (null? (poly-shrink poly)))
+  (zero? (car (poly-shrink poly))))
 
 (define (poly-shrink poly)
-  (define (remove-first-zeros list)
-    (if (null? list)
-	list
-	(if (zero? (car list))
-	    (remove-first-zeros (cdr list))
-	    list)))
-  (reverse (remove-first-zeros (reverse poly))))
-
-(define (poly-expand poly n)
-  (if (poly-zero? poly)
-      (make-list n 0)
-      (cons (car poly)
-	    (poly-expand (cdr poly) (- n 1)))))
+  (if (null? poly)
+      (list 0)
+      (if (zero? (car poly))
+          (poly-shrink (cdr poly))
+          poly)))
 
 (define (poly-degree poly)
   (- (length (poly-shrink poly)) 1))
 
+(define (poly-expand poly deg)
+  (if (> (poly-degree poly) deg)
+    (poly-shrink poly)
+    (take-right* poly (+ deg 1) #t 0)))
+
+; poly * x^{offset}
 (define (poly-elevate-degree poly offset)
   (cond
     ((null? poly) (list 0))
     ((zero? offset) poly)
-    ((positive? offset) (poly-elevate-degree (cons 0 poly) (- offset 1)))
-    (else (poly-elevate-degree (cdr poly) (+ offset 1)))))
-#|
-  (if (zero? offset)
-      poly
-      (poly-elevate-degree (cons 0 poly) (- offset 1))))
-  |#
+    ((positive? offset) (append poly (make-list offset 0)))
+    ((negative? offset) (drop-right* poly (- offset))) ; NB: it drops information. use it carefully.
+    (else (error "poly-elevate-degree failed"))))
 
 (define (poly= poly1 poly2)
   (equal? (poly-shrink poly1)
 	  (poly-shrink poly2)))
 
-(define (poly-find-min . args)
+(define (poly-find-min-degree . args)
   (find-min args :key poly-degree))
 
-(define (poly-find-max . args)
+(define (poly-find-max-degree . args)
   (find-max args :key poly-degree))
 
+(define (poly-degree-list poly)
+  (reverse (iota (length poly))))
 
 
 ;;; Misc
@@ -79,8 +73,8 @@
 
 (define (expand-polys lists)
   (if (null? lists) '(())
-    (let ((len (max-length-polys lists)))
-      (map (lambda (lst) (poly-expand lst len)) lists))))
+    (let ((deg (- (max-length-polys lists) 1)))
+      (map (lambda (lst) (poly-expand lst deg)) lists))))
 
 
 
@@ -177,18 +171,18 @@
            (map (lambda (j offset)
                   (poly-elevate-degree (map (lambda (i) (gf2-mul gf2 i j)) a) offset))
                 b
-                (iota (length b))))))
+                (poly-degree-list b)))))
 
 (define (gf2-divmod-poly gf2 a b)
   (define (poly-leading-coefficient poly)
-    (fold (^(a b) (if (> a 0) a b)) 0 poly))
+    (car (poly-shrink poly)))
   (let ((max-deg-denom (poly-leading-coefficient b)))
     (when (<= max-deg-denom 0)
           (error "divide by zero poly" a "/" b))
     (let loop ((q '())
                (r a))
       (let ((offset (- (poly-degree r) (poly-degree b))))
-        (if (< offset 0)
+        (if (or (negative? offset) (poly-zero? r))
           (values (poly-shrink q) (poly-shrink r))
           (let* ((tmp-q (poly-elevate-degree (list (gf2-div gf2 (poly-leading-coefficient r) max-deg-denom)) offset))
                  (nq (gf2-add-poly gf2 q tmp-q))
@@ -205,27 +199,29 @@
 	   r))
 
 (define (gf2-add-poly gf2 . rest)
-  (apply map (lambda args (apply gf2-add gf2 args)) (expand-polys rest)))
+  (apply map (pa$ gf2-add gf2) (expand-polys rest)))
+;  (apply map (lambda args (apply gf2-add gf2 args)) (expand-polys rest)))
 
 (define (gf2-dif-poly gf2 a)
-  (map (^(x i) (if (even? i) x 0)) (cdr a) (iota (length a))))
+  (poly-elevate-degree
+    (map (^(x i) (if (even? i) 0 x)) a (poly-degree-list a))
+    -1))
 
-(define (gf2-calc-poly gf2 a b)
+(define (gf2-calc-poly gf2 poly value)
   (apply gf2-add gf2
-	 (map (lambda (c i) (gf2-mul gf2 c (gf2-pow gf2 b i))) a (iota (+ (poly-degree a) 1)))))
-
+	 (map (lambda (coeff i) (gf2-mul gf2 coeff (gf2-pow gf2 value i))) poly (poly-degree-list poly))))
 
 (define (get-generator-polynomial-for-rs gf2 error-words :optional (b 0))
   ; multiply all (x - a^i) to calc G(x) of RS
   (fold (lambda (i s)
-	  (gf2-mul-poly gf2 s (list (gf2-alpha gf2 i)
-				    (gf2-alpha gf2 0))))
+	  (gf2-mul-poly gf2 s (list (gf2-alpha gf2 0)
+				    (gf2-alpha gf2 i))))
 	(list 1)
 	(iota error-words b))) ; error-words = 2t
 
 (define (gf2-solve-key-equation gf2 a b)
-  (let loop ((m (poly-find-max a b))
-             (n (poly-find-min a b))
+  (let loop ((m (poly-find-max-degree a b))
+             (n (poly-find-min-degree a b))
              (x (list 0))
              (y (list 1)))
     (if (and (not (poly-zero? n))
@@ -233,7 +229,7 @@
       (receive (q r) (gf2-divmod-poly gf2 m n)
         (let ((z (gf2-add-poly gf2 (gf2-mul-poly gf2 q y) x)))
           (loop n r y z)))
-      (let ((h (list (car y))))
+      (let ((h (take-right y 1))) ;; XXX
         (values (gf2-div-poly gf2 y h)
                 (gf2-div-poly gf2 n h))))))
 
@@ -272,11 +268,11 @@
          (channel-decode (~ rscode 'channel-decoder))
          (channel-encode (~ rscode 'channel-encoder))
          (num-error-words (~ rscode 'num-error-words))
-         (I (poly-elevate-degree (reverse (channel-decode data-words)) num-error-words))
+         (I (poly-elevate-degree (channel-decode data-words) num-error-words))
          (g (~ rscode 'g))
 
          (result (channel-encode (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I))))
-    (values result (drop result num-error-words) (take result num-error-words))))
+    (values result (drop-right* result num-error-words) (take-right* result num-error-words))))
 
 
 (define (rs-decode rscode encoded-words)
@@ -291,27 +287,26 @@
          (dmin (~ rscode 'dmin))
          (dmin-1 (- dmin 1))
          (s (map (lambda (i) (gf2-calc-poly gf2 r (gf2-alpha gf2 i)))
-                 (iota dmin-1 b))) ; syndrome vector
+                 (reverse (iota dmin-1 b)))) ; syndrome vector XXX
          (z (poly-elevate-degree '(1) dmin-1))) ; z = x^{dmin-1}
-    ;(print "Syndrome: " s)
+    ;(print "Syndrome: " s r)
     (channel-encode
-      (reverse
-        (drop
-          ; Solve Key Equation: Omega(x) = Sigma(x) * S(x) mod x^(2t)
-          (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
-            (let* ((denom (gf2-dif-poly gf2 sigma))
-                   ; Forney algorithm
-                   ; $$ e_k = - \frac{\alpha^{i_k}\omega(\alpha^{-i_k})}{\alpha^{b \cdot i_k}\sigma'(\alpha^{-i_k})} $$
-                   (e* (map (^i
-                              (let ((v (gf2-alpha gf2 (- i))))
-                                (if (zero? (gf2-calc-poly gf2 sigma v))
-                                  (gf2-div gf2
-                                           (gf2-mul gf2 (gf2-alpha gf2      i ) (gf2-calc-poly gf2 omega v))
-                                           (gf2-mul gf2 (gf2-alpha gf2 (* b i)) (gf2-calc-poly gf2 denom v)))
-                                  0)))
-                            (iota num-total-words))))
-              (map (pa$ gf2-add gf2) e* r)))
-          num-error-words)))))
+      (drop-right*
+        ; Solve Key Equation: Omega(x) = Sigma(x) * S(x) mod x^(2t)
+        (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
+          (let* ((denom (gf2-dif-poly gf2 sigma))
+                 ; Forney algorithm
+                 ; $$ e_k = - \frac{\alpha^{i_k}\omega(\alpha^{-i_k})}{\alpha^{b \cdot i_k}\sigma'(\alpha^{-i_k})} $$
+                 (e* (map (^i
+                            (let ((v (gf2-alpha gf2 (- i))))
+                              (if (zero? (gf2-calc-poly gf2 sigma v))
+                                (gf2-div gf2
+                                         (gf2-mul gf2 (gf2-alpha gf2      i ) (gf2-calc-poly gf2 omega v))
+                                         (gf2-mul gf2 (gf2-alpha gf2 (* b i)) (gf2-calc-poly gf2 denom v)))
+                                0)))
+                          (poly-degree-list r))))
+            (map (pa$ gf2-add gf2) e* r)))
+        num-error-words))))
 
 (define (rs-encode-string rscode str)
   (rs-encode rscode (u8vector->list (string->u8vector str))))
@@ -323,20 +318,20 @@
 (define (gf2-format-poly gf2 poly)
   (let ((deg (poly-degree poly)))
     (string-join
-      (reverse
+      (identity
         (filter-map
           (lambda (val idx)
             (and (not (zero? val))
               (format "a^~A x^~A" (gf2-log-alpha gf2 val) idx)))
           poly
-          (iota (length poly))))
+          (poly-degree-list poly)))
       " + ")))
 
 (define (gf2-pretty-format-poly gf2 poly)
   (let ((deg (poly-degree poly)))
     (string-append "$ "
     (string-join
-      (reverse
+      (identity
         (filter-map
           (lambda (val idx)
             (let1 coeff (gf2-log-alpha gf2 val)
@@ -349,7 +344,7 @@
                 ((= idx 1)                     (format "\\alpha^{~A} x" coeff))
                 (else                          (format "\\alpha^{~A} x^{~A}" coeff idx)))))
           poly
-          (iota (length poly))))
+          (poly-degree-list poly)))
       " + ")
     " $"
     )))
@@ -427,7 +422,7 @@
                                                 (iota m)))))
 
          (g-roots (delete-duplicates (fold append '() (map (cut get-conjugates <> q m) (iota (- dmin 1) b)))))
-         (g (fold (lambda (e knil) (gf2-mul-poly gf2 knil (list (gf2-alpha gf2 e) (gf2-alpha gf2 0)))) (list 1) g-roots))
+         (g (fold (lambda (e knil) (gf2-mul-poly gf2 knil (list (gf2-alpha gf2 0) (gf2-alpha gf2 e)))) (list 1) g-roots))
 
          (num-error-words (length g-roots))
          (num-total-words n)
