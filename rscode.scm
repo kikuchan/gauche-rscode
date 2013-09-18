@@ -21,9 +21,8 @@
 
 ;;; Polynomial
 
-(define (poly-ref poly i)
-  ; It refers i-th degree
-  (ref poly (- (poly-degree poly) i)))
+(define (poly-ref poly deg)
+  (ref poly (- (length poly) deg 1)))
 
 (define (poly-zero? poly)
   (zero? (car (poly-shrink poly))))
@@ -229,7 +228,7 @@
       (receive (q r) (gf2-divmod-poly gf2 m n)
         (let ((z (gf2-add-poly gf2 (gf2-mul-poly gf2 q y) x)))
           (loop n r y z)))
-      (let ((h (take-right y 1))) ;; XXX
+      (let ((h (list (poly-ref y 0))))
         (values (gf2-div-poly gf2 y h)
                 (gf2-div-poly gf2 n h))))))
 
@@ -272,7 +271,7 @@
          (g (~ rscode 'g))
 
          (result (channel-encode (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I))))
-    (values result (drop-right* result num-error-words) (take-right* result num-error-words))))
+    (values result (take-right* result num-error-words)))) ; XXX: direct poly operation
 
 
 (define (rs-decode rscode encoded-words)
@@ -287,11 +286,11 @@
          (dmin (~ rscode 'dmin))
          (dmin-1 (- dmin 1))
          (s (map (lambda (i) (gf2-calc-poly gf2 r (gf2-alpha gf2 i)))
-                 (reverse (iota dmin-1 b)))) ; syndrome vector XXX
+                 (reverse (iota dmin-1 b)))) ; syndrome vector. XXX: direct poly operation
          (z (poly-elevate-degree '(1) dmin-1))) ; z = x^{dmin-1}
     ;(print "Syndrome: " s r)
     (channel-encode
-      (drop-right*
+      (poly-elevate-degree
         ; Solve Key Equation: Omega(x) = Sigma(x) * S(x) mod x^(2t)
         (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
           (let* ((denom (gf2-dif-poly gf2 sigma))
@@ -306,7 +305,7 @@
                                 0)))
                           (poly-degree-list r))))
             (map (pa$ gf2-add gf2) e* r)))
-        num-error-words))))
+        (- num-error-words)))))
 
 (define (rs-encode-string rscode str)
   (rs-encode rscode (u8vector->list (string->u8vector str))))
