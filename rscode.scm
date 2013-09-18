@@ -10,11 +10,9 @@
     rs-decode-string
 
     make-bchcode
-    make-bch-code-over-2
-    make-rs-code-over-2
 
-    gf2-format-poly
-    gf2-pretty-format-poly
+    make-generic-bchcode
+    make-generic-rscode
   ))
 
 (select-module rscode)
@@ -95,7 +93,9 @@
     ([4] #x03)
     ([5] #x05)
     ([6] #x03)
+    ([7] #x09)
     ([8] #x1d)
+    ([9] #x11)
     (else (error "Sorry, the specified field is not supported yet:" n))))
 
 (define (max-exp gf2)
@@ -229,6 +229,8 @@
         (let ((z (gf2-add-poly gf2 (gf2-mul-poly gf2 q y) x)))
           (loop n r y z)))
       (let ((h (list (poly-ref y 0))))
+        (when (poly-zero? h)
+          (error "decode error"))
         (values (gf2-div-poly gf2 y h)
                 (gf2-div-poly gf2 n h))))))
 
@@ -263,49 +265,52 @@
 
 (define (rs-encode rscode data-words)
   ;; TODO: check data-words size
-  (let* ((gf2 (~ rscode 'gf2))
-         (channel-decode (~ rscode 'channel-decoder))
-         (channel-encode (~ rscode 'channel-encoder))
-         (num-error-words (~ rscode 'num-error-words))
-         (I (poly-elevate-degree (channel-decode data-words) num-error-words))
-         (g (~ rscode 'g))
+  (unless (<= (length data-words) (~ rscode 'num-data-words))
+    (error "encode error: too many data-words"))
+  (guard (e (else (error "encode error")))
+    (let* ((gf2 (~ rscode 'gf2))
+           (channel-decode (~ rscode 'channel-decoder))
+           (channel-encode (~ rscode 'channel-encoder))
+           (num-error-words (~ rscode 'num-error-words))
+           (I (poly-elevate-degree (channel-decode data-words) num-error-words))
+           (g (~ rscode 'g))
 
-         (result (channel-encode (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I))))
-    (values result (take-right* result num-error-words)))) ; XXX: direct poly operation
+           (result (channel-encode (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I))))
+      (values result (take-right* result num-error-words))))) ; XXX: direct poly operation
 
 
 (define (rs-decode rscode encoded-words)
-  ;;
-  (let* ((gf2 (~ rscode 'gf2))
-         (channel-decode (~ rscode 'channel-decoder))
-         (channel-encode (~ rscode 'channel-encoder))
-         (r (channel-decode encoded-words))
-         (num-total-words (~ rscode 'num-total-words))
-         (num-error-words (~ rscode 'num-error-words))
-         (b (~ rscode 'b))
-         (dmin (~ rscode 'dmin))
-         (dmin-1 (- dmin 1))
-         (s (map (lambda (i) (gf2-calc-poly gf2 r (gf2-alpha gf2 i)))
-                 (reverse (iota dmin-1 b)))) ; syndrome vector. XXX: direct poly operation
-         (z (poly-elevate-degree '(1) dmin-1))) ; z = x^{dmin-1}
-    ;(print "Syndrome: " s r)
-    (channel-encode
-      (poly-elevate-degree
-        ; Solve Key Equation: Omega(x) = Sigma(x) * S(x) mod x^(2t)
-        (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
-          (let* ((denom (gf2-dif-poly gf2 sigma))
-                 ; Forney algorithm
-                 ; $$ e_k = - \frac{\alpha^{i_k}\omega(\alpha^{-i_k})}{\alpha^{b \cdot i_k}\sigma'(\alpha^{-i_k})} $$
-                 (e* (map (^i
-                            (let ((v (gf2-alpha gf2 (- i))))
-                              (if (zero? (gf2-calc-poly gf2 sigma v))
-                                (gf2-div gf2
-                                         (gf2-mul gf2 (gf2-alpha gf2      i ) (gf2-calc-poly gf2 omega v))
-                                         (gf2-mul gf2 (gf2-alpha gf2 (* b i)) (gf2-calc-poly gf2 denom v)))
-                                0)))
-                          (poly-degree-list r))))
-            (map (pa$ gf2-add gf2) e* r)))
-        (- num-error-words)))))
+  (guard (e (else (error "decode error")))
+    (let* ((gf2 (~ rscode 'gf2))
+           (channel-decode (~ rscode 'channel-decoder))
+           (channel-encode (~ rscode 'channel-encoder))
+           (r (channel-decode encoded-words))
+           (num-total-words (~ rscode 'num-total-words))
+           (num-error-words (~ rscode 'num-error-words))
+           (b (~ rscode 'b))
+           (dmin (~ rscode 'dmin))
+           (dmin-1 (- dmin 1))
+           (s (map (lambda (i) (gf2-calc-poly gf2 r (gf2-alpha gf2 i)))
+                   (reverse (iota dmin-1 b)))) ; syndrome vector. XXX: direct poly operation
+           (z (poly-elevate-degree '(1) dmin-1))) ; z = x^{dmin-1}
+      ;(print "Syndrome: " s r)
+      (channel-encode
+        (poly-elevate-degree
+          ; Solve Key Equation: Omega(x) = Sigma(x) * S(x) mod x^(2t)
+          (receive (sigma omega) (gf2-solve-key-equation gf2 z s)
+            (let* ((denom (gf2-dif-poly gf2 sigma))
+                   ; Forney algorithm
+                   ; $$ e_k = - \frac{\alpha^{i_k}\omega(\alpha^{-i_k})}{\alpha^{b \cdot i_k}\sigma'(\alpha^{-i_k})} $$
+                   (e* (map (^i
+                              (let ((v (gf2-alpha gf2 (- i))))
+                                (if (zero? (gf2-calc-poly gf2 sigma v))
+                                  (gf2-div gf2
+                                           (gf2-mul gf2 (gf2-alpha gf2      i ) (gf2-calc-poly gf2 omega v))
+                                           (gf2-mul gf2 (gf2-alpha gf2 (* b i)) (gf2-calc-poly gf2 denom v)))
+                                  0)))
+                            (poly-degree-list r))))
+              (map (pa$ gf2-add gf2) e* r)))
+          (- num-error-words))))))
 
 (define (rs-encode-string rscode str)
   (rs-encode rscode (u8vector->list (string->u8vector str))))
@@ -433,9 +438,9 @@
          (channel-encoder-table (make-hash-table))
          
          (channel-decoder (lambda (l)
-                             (map (pa$ hash-table-get channel-decoder-table) l)))
+                            (map (pa$ hash-table-get channel-decoder-table) l)))
          (channel-encoder (lambda (l)
-                             (map (pa$ hash-table-get channel-encoder-table) l)))
+                            (map (pa$ hash-table-get channel-encoder-table) l)))
          )
 
     (hash-table-put! channel-decoder-table 0 0)
@@ -458,16 +463,16 @@
 
 
 
-; narrow-sense
+; narrow-sense, binary BCH
 (define (make-bchcode num-total-words num-data-words dmin :optional (gf2-prim-poly #f))
   (let1 m (x->integer (ceiling (log num-total-words 2)))
-    (make-bch-code-over-2 1 m dmin 1 gf2-prim-poly)))
+    (make-generic-bchcode 1 m dmin 1 gf2-prim-poly)))
 
-(define (make-rs-code-over-2 r dmin :optional (b 1) (poly #f))
-  (make-bch-code-over-2 r 1 dmin b poly))
+(define (make-generic-rscode r dmin :optional (b 1) (poly #f))
+  (make-generic-bchcode r 1 dmin b poly))
 
 ; Make BCH over GF(2^r), with n = q^m  (It is Reed-Solomon if m == 1)
-(define (make-bch-code-over-2 r m dmin :optional (b 1) (poly #f))
+(define (make-generic-bchcode r m dmin :optional (b 1) (poly #f))
   (make <bch-code>
         :r r
         :m m
