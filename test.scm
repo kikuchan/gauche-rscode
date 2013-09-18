@@ -12,6 +12,30 @@
 
 (define rscode (make-rscode 26 19))
 
+(test-section "well-known rs-encode / rs-decode pattern")
+
+(let ((input '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 243 224 235 100)))
+  (test "rs-encode (well known)"
+        '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 243 224 235 100 57 115 92 47 14 44 132)
+        (lambda() (rs-encode rscode input))))
+
+(let ((input '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 243 224 235 100 57 115 92 47 14 44 132)))
+  (test "rs-decode (well known)"
+        '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 243 224 235 100)
+        (lambda() (rs-decode rscode input))))
+
+(let ((input '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 0 224 235 100 57 115 92 47 14 44 132)))
+  (test "rs-decode (well known + 1 errors)"
+        '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 243 224 235 100)
+        (lambda() (rs-decode rscode input))))
+
+(let ((input '(208 251 75 42 44 27 126 95 0 50 221 125 52 86 157 0 224 235 100 57 115 92 47 14 44 132)))
+  (test "rs-decode (well known + 2 errors)"
+        '(208 251 75 42 44 27 126 95 50 50 221 125 52 86 157 243 224 235 100)
+        (lambda() (rs-decode rscode input))))
+
+(test-end :exit-on-failure #t)
+
 (test-section "rs-encode / rs-decode")
 
 (dotimes (i 100)
