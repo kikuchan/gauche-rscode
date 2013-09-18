@@ -9,8 +9,12 @@
     rs-encode-string
     rs-decode-string
 
+    make-bchcode
     make-bch-code-over-2
     make-rs-code-over-2
+
+    gf2-format-poly
+    gf2-pretty-format-poly
   ))
 
 (select-module rscode)
@@ -211,24 +215,6 @@
 	 (map (lambda (c i) (gf2-mul gf2 c (gf2-pow gf2 b i))) a (iota (+ (poly-degree a) 1)))))
 
 
-; dmin : minimum (design) distance
-(define (get-generator-polynomial-for-bch gf2 dmin :optional (b 0))
-  ; b = 1, narrow sense
-  (define (get-conjugates s q m)
-    ; conjugates = cyclotomic cosets ?
-    (delete-duplicates (map
-                         (lambda (i)
-                           (mod (* s (expt q i)) (- (expt q m) 1)))
-                         (iota m))))
-  (define (minimal-polynomial-terms s)
-    (let1 terms (map (lambda (e)
-                       (list (gf2-alpha gf2 e) (gf2-alpha gf2 0)))
-                     (get-conjugates s q m))
-      terms))
-  (fold (lambda (elm knil) (gf2-mul-poly gf2 knil elm))
-	(list 1)
-	(delete-duplicates (fold append '() (map minimal-polynomial-terms (iota (- dmin 1) b))))))
-
 (define (get-generator-polynomial-for-rs gf2 error-words :optional (b 0))
   ; multiply all (x - a^i) to calc G(x) of RS
   (fold (lambda (i s)
@@ -253,25 +239,15 @@
 
 
 (define-class <rscode> ()
-  ((gf2         :init-keyword :gf2)
-   (g           :init-keyword :g)
+  ((gf2             :init-keyword :gf2)
+   (g               :init-keyword :g)
    (num-total-words :init-keyword :num-total-words)
    (num-data-words  :init-keyword :num-data-words)
    (num-error-words :init-keyword :num-error-words)
+   (b               :init-keyword :b)
+   (dmin            :init-keyword :dmin)
    (channel-decoder :init-value identity)
    (channel-encoder :init-value identity)))
-
-(define (make-bchcode n k d :optional (gf2-channel-exp 8) (gf2-decoder-exp 8) (gf2-prim-poly #f))
-  (let* ((gf2 (make-galois-field-2 gf2-exp (or gf2-prim-poly (get-poly-from-n gf2-exp))))
-         (num-error-words (- num-total-words num-data-words))
-         (g   (get-generator-polynomial-for-rs gf2 num-error-words)))
-    (make <rscode>
-          :gf2 gf2
-          :g g
-          :num-total-words num-total-words
-          :num-data-words  num-data-words
-          :num-error-words num-error-words)))
-
 
 (define (make-rscode num-total-words num-data-words :optional (gf2-exp 8) (gf2-prim-poly #f))
   (unless (< num-total-words (expt 2 gf2-exp))
@@ -283,6 +259,8 @@
     (make <rscode>
           :gf2 gf2
           :g g
+          :b 0
+          :dmin (+ num-error-words 1)
           :num-total-words num-total-words
           :num-data-words  num-data-words
           :num-error-words num-error-words)))
@@ -293,9 +271,12 @@
   (let* ((gf2 (~ rscode 'gf2))
          (channel-decode (~ rscode 'channel-decoder))
          (channel-encode (~ rscode 'channel-encoder))
-         (I (poly-elevate-degree (reverse (channel-decode data-words)) (~ rscode 'num-error-words)))
-         (g (~ rscode 'g)))
-    (channel-encode (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I))))
+         (num-error-words (~ rscode 'num-error-words))
+         (I (poly-elevate-degree (reverse (channel-decode data-words)) num-error-words))
+         (g (~ rscode 'g))
+
+         (result (channel-encode (gf2-add-poly gf2 (gf2-mod-poly gf2 I g) I))))
+    (values result (drop result num-error-words) (take result num-error-words))))
 
 
 (define (rs-decode rscode encoded-words)
@@ -333,13 +314,9 @@
           num-error-words)))))
 
 (define (rs-encode-string rscode str)
-  (when (> 8 (~ rscode r))
-    (error "Not supported on the field. Use rs-encode directly instead."))
   (rs-encode rscode (u8vector->list (string->u8vector str))))
 
 (define (rs-decode-string rscode lst)
-  (when (> 8 (~ rscode r))
-    (error "Not supported on the field. Use rs-decode directly instead."))
   (u8vector->string (list->u8vector (rs-decode rscode lst))))
 
 
@@ -355,6 +332,27 @@
           (iota (length poly))))
       " + ")))
 
+(define (gf2-pretty-format-poly gf2 poly)
+  (let ((deg (poly-degree poly)))
+    (string-append "$ "
+    (string-join
+      (reverse
+        (filter-map
+          (lambda (val idx)
+            (let1 coeff (gf2-log-alpha gf2 val)
+              (cond
+                ((zero? val) #f) ;; zero
+                ((and (zero? coeff) (= idx 0)) "1")
+                ((and (zero? coeff) (= idx 1)) (format "x"))
+                (     (zero? coeff)            (format "x^{~A}" idx))
+                ((= idx 0)                     (format "\\alpha^{~A}" coeff))
+                ((= idx 1)                     (format "\\alpha^{~A} x" coeff))
+                (else                          (format "\\alpha^{~A} x^{~A}" coeff idx)))))
+          poly
+          (iota (length poly))))
+      " + ")
+    " $"
+    )))
 
 ;;; Test
 
@@ -385,28 +383,22 @@
 
 
 (define-class <bch-code> ()
-  ((r           :init-keyword :r :init-value 1)
-   (m           :init-keyword :m :init-value 8)
-   (t           :init-keyword :t :init-value 1)
-   (b           :init-keyword :b :init-value 1)
-   (gf2-prim-poly :init-keyword :gf2-prim-poly :init-value #f)
+  ((r               :init-keyword :r :init-value 1)
+   (m               :init-keyword :m :init-value 8)
+   (dmin            :init-keyword :dmin :init-value 1)
+   (b               :init-keyword :b :init-value 1)
+   (gf2-prim-poly   :init-keyword :gf2-prim-poly :init-value #f)
 
+   ; private
    (gf2)
-   (q)
-   (n)
-   (dmin)
-   (g-roots)
-   (g)
+   (g)  ; generator-polynomial
 
    (num-total-words)
    (num-data-words )
    (num-error-words)
 
    (channel-decoder :init-value identity)
-   (channel-encoder :init-value identity)
-
-   (channel-decoder-table)
-   (channel-encoder-table)))
+   (channel-encoder :init-value identity)))
 
 (define-macro (slot-copy! obj symbols)
   `(begin
@@ -417,7 +409,7 @@
   (next-method)
   (let* ((r    (slot-ref self 'r))
          (m    (slot-ref self 'm))
-         (t    (slot-ref self 't))
+         (dmin (slot-ref self 'dmin))
          (b    (slot-ref self 'b))
 
          (gf2-exp (* r m))
@@ -426,7 +418,6 @@
 
          (q (expt 2 r))
          (n (- (expt q m) 1))
-         (dmin (+ (* 2 t) 1))
 
          (get-conjugates (lambda (s q m)
                            ; conjugates = cyclotomic cosets ?
@@ -460,33 +451,33 @@
         (hash-table-put! channel-decoder-table (+ 1 channel-value) decoder-value)
         (hash-table-put! channel-encoder-table decoder-value (+ 1 channel-value)))
       (sort (map (pa$ gf2-alpha gf2) channel-alphabet-list)))
-    (slot-copy! self (gf2 gf2-prim-poly
-                          q
-                          n
-                          dmin
-                          g-roots
-                          g
-                          num-error-words
-                          num-total-words
-                          num-data-words
-                          channel-decoder-table channel-encoder-table
-                          channel-decoder
-                          channel-encoder
-                          ))))
+
+    (slot-copy! self (gf2
+                      gf2-prim-poly
+                      g
+                      num-error-words
+                      num-total-words
+                      num-data-words
+                      channel-decoder
+                      channel-encoder))))
 
 
 
 
+; narrow-sense
+(define (make-bchcode num-total-words num-data-words dmin :optional (gf2-prim-poly #f))
+  (let1 m (x->integer (ceiling (log num-total-words 2)))
+    (make-bch-code-over-2 1 m dmin 1 gf2-prim-poly)))
 
-(define (make-rs-code-over-2 r t :optional (b 1) (poly #f))
-  (make-bch-code-over-2 r 1 t b poly))
+(define (make-rs-code-over-2 r dmin :optional (b 1) (poly #f))
+  (make-bch-code-over-2 r 1 dmin b poly))
 
 ; Make BCH over GF(2^r), with n = q^m  (It is Reed-Solomon if m == 1)
-(define (make-bch-code-over-2 r m t :optional (b 1) (poly #f))
+(define (make-bch-code-over-2 r m dmin :optional (b 1) (poly #f))
   (make <bch-code>
         :r r
         :m m
-        :t t
+        :dmin dmin
         :b b
         :gf2-prim-poly poly))
 
