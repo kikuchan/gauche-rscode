@@ -210,14 +210,6 @@
   (apply gf2-add gf2
 	 (map (lambda (coeff i) (gf2-mul gf2 coeff (gf2-pow gf2 value i))) poly (poly-degree-list poly))))
 
-(define (get-generator-polynomial-for-rs gf2 error-words :optional (b 0))
-  ; multiply all (x - a^i) to calc G(x) of RS
-  (fold (lambda (i s)
-	  (gf2-mul-poly gf2 s (list (gf2-alpha gf2 0)
-				    (gf2-alpha gf2 i))))
-	(list 1)
-	(iota error-words b))) ; error-words = 2t
-
 (define (gf2-solve-key-equation gf2 a b)
   (let loop ((m (poly-find-max-degree a b))
              (n (poly-find-min-degree a b))
@@ -234,34 +226,8 @@
         (values (gf2-div-poly gf2 y h)
                 (gf2-div-poly gf2 n h))))))
 
-
-(define-class <rscode> ()
-  ((gf2             :init-keyword :gf2)
-   (g               :init-keyword :g)
-   (num-total-words :init-keyword :num-total-words)
-   (num-data-words  :init-keyword :num-data-words)
-   (num-error-words :init-keyword :num-error-words)
-   (b               :init-keyword :b)
-   (dmin            :init-keyword :dmin)
-   (channel-decoder :init-value identity)
-   (channel-encoder :init-value identity)))
-
-(define (make-rscode num-total-words num-data-words :optional (gf2-exp 8) (gf2-prim-poly #f))
-  (unless (< num-total-words (expt 2 gf2-exp))
-    ; due to the Reed-Solomon limit
-    (error #`"num-total-words must be less than 2^,|gf2-exp|"))
-  (let* ((gf2 (make-galois-field-2 gf2-exp (or gf2-prim-poly (get-poly-from-n gf2-exp))))
-         (num-error-words (- num-total-words num-data-words))
-         (g   (get-generator-polynomial-for-rs gf2 num-error-words)))
-    (make <rscode>
-          :gf2 gf2
-          :g g
-          :b 0
-          :dmin (+ num-error-words 1)
-          :num-total-words num-total-words
-          :num-data-words  num-data-words
-          :num-error-words num-error-words)))
-
+(define (make-rscode N k :optional (gf2-exp 8) (gf2-prim-poly #f))
+  (make-generic-rscode gf2-exp (+ (- N k) 1) 0 gf2-prim-poly))
 
 (define (rs-encode rscode data-words)
   ;; TODO: check data-words size
